@@ -1,0 +1,295 @@
+// curv-solids - A library for working with polyhedra in Curv
+// Copyright 2019 Philipp Emanuel Weidmann <pew@worldwidemann.com>
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+{
+
+arg_min (list :: is_list, f :: is_fun) =
+  reduce (null, (a, b) -> if (f(a) < f(b)) a else b) list;
+
+delete (list :: is_list, index :: is_num) =
+  [for (i in indices list) if (i != index) list[i]];
+
+pairs (list :: is_list) =
+  [for (i in indices list) [list[i], list[mod(i+1, count list)]]];
+
+point_in_polygon (polygons, index, length, axis, point) =
+  do
+  // See section "3D Polygons" in the article linked below
+  var A := 0;
+  var B := 0;
+  if (axis == X) (
+    A := Y;
+    B := Z;
+  ) else (
+    if (axis == Y) (
+      A := X;
+      B := Z;
+    ) else (
+      A := X;
+      B := Y;
+    );
+  );
+  // Translated from the C code in
+  // "PNPOLY - Point Inclusion in Polygon Test" by W. Randolph Franklin
+  // (https://wrf.ecse.rpi.edu/Research/Short_Notes/pnpoly.html).
+  // See also https://en.wikipedia.org/wiki/Point_in_polygon.
+  var nvert := length;
+  var i := 0;
+  var j := nvert - 1;
+  var c := false;
+  while (i < nvert) (
+    if (
+      (bit(polygons[index,i,B] > point[B]) != bit(polygons[index,j,B] > point[B])) &&
+      (point[A] < (polygons[index,j,A] - polygons[index,i,A]) * (point[B] - polygons[index,i,B]) /
+                  (polygons[index,j,B] - polygons[index,i,B]) + polygons[index,i,A])
+    ) (
+      c := !c;
+    );
+    j := i;
+    i := i + 1;
+  );
+  in
+  c;
+
+polygon_axis (vertices :: is_list) =
+  let
+  bounding_box = [min vertices, max vertices];
+  in
+  // Coordinate with the smallest range
+  arg_min([X,Y,Z], c -> bounding_box[MAX,c] - bounding_box[MIN,c]);
+
+polygon_normal (vertices :: is_list) =
+  // See "Newell's Method for Computing the Plane Equation of a Polygon"
+  // by Filippo Tampieri (Graphics Gems III)
+  normalize(sum[for ([v1, v2] in pairs vertices) [
+    (v1[Y] - v2[Y]) * (v1[Z] + v2[Z]),
+    (v1[Z] - v2[Z]) * (v1[X] + v2[X]),
+    (v1[X] - v2[X]) * (v1[Y] + v2[Y]),
+  ]]);
+
+distance_point_line_segment ([from, to], point) =
+  // Translated from the C++ code in https://stackoverflow.com/a/1501725
+  let
+  v = to - from;
+  t = clamp(dot(point - from, v) / ((mag v)^2), 0, 1);
+  projection = from + t*v;
+  in
+  mag(projection - point);
+
+distance_point_polygon (polygons, index, length, normal, axis, point) =
+  let
+  t = dot(point - polygons[index,0], normal);
+  // https://stackoverflow.com/a/8944143
+  projection = point - t*normal;
+  distance = if (point_in_polygon(polygons, index, length, axis, projection)) (
+    mag(projection - point)
+  ) else (
+    do
+    var distance := 0;
+    var min_distance := inf;
+    var i := 0;
+    while (i < length) (
+      distance := distance_point_line_segment([polygons[index,i], polygons[index, mod(i+1, length)]], point);
+      if (distance < min_distance) (
+        min_distance := distance;
+      );
+      i := i + 1;
+    );
+    in
+    min_distance
+  );
+  in
+  // https://math.stackexchange.com/a/7934
+  if (t > 0) (
+    // Point lies above the polygon
+    distance
+  ) else (
+    // Point lies below the polygon
+    -distance
+  );
+
+distance_point_polyhedron (polygons, lengths, normals, axes, point) =
+  do
+  var distance := 0;
+  var min_distance := inf;
+  var i := 0;
+  while (i < count polygons) (
+    distance := distance_point_polygon(polygons, i, lengths[i], normals[i], axes[i], point);
+    if (abs(distance) < abs(min_distance)) (
+      min_distance := distance;
+    );
+    i := i + 1;
+  );
+  in
+  min_distance;
+
+polyhedron {vertices :: is_list, faces :: is_list} =
+  let
+  lengths = [for (f in faces) count(f)];
+  max_length = max lengths;
+  polygons = [for (f in faces)
+    [for (i in 0..<max_length) (
+      if (i < count(f)) (
+        vertices[f[i]]
+      ) else (
+        // Pad with zeros because the Geometry Compiler
+        // only supports rectangular arrays
+        [0, 0, 0]
+      )
+    )]
+  ];
+  normals = [for (f in polygons) polygon_normal(f)];
+  axes = [for (f in polygons) polygon_axis(f)];
+  in
+  {
+    ... make_shape {
+      dist (x,y,z,t) = distance_point_polyhedron(polygons, lengths, normals, axes, [x,y,z]);
+      bbox = [min vertices, max vertices];
+      is_3d = true;
+    },
+    vertices: vertices,
+    faces: faces,
+  };
+
+is_polyhedron (s :: is_shape) =
+  defined(s.vertices) && defined(s.faces);
+
+triangulate_polygon (vertices :: is_list) =
+  // A simple variant of the "ear clipping method"
+  // (https://en.wikipedia.org/wiki/Polygon_triangulation#Ear_clipping_method).
+  // Faster algorithms exist, but are much more complex,
+  // and often yield inferior triangulations.
+  let
+  nvert = count vertices;
+  in
+  if (nvert > 3) (
+    do
+    var normal := polygon_normal vertices;
+    var vertex_normal := [0, 0, 0];
+    var convex := false;
+    var empty := false;
+    var ear_found := false;
+    var v1 := vertices[nvert-1];
+    var v2 := vertices[0];
+    var v3 := vertices[1];
+    var i := 0;
+    var j := 0;
+    while ((i < nvert) && (!ear_found)) (
+      // Normal vector to the plane formed by the side (v1, v2)
+      // and the normal of the polygon, pointing outwards
+      vertex_normal := cross(v2 - v1, normal);
+      // https://math.stackexchange.com/a/7934
+      convex := (dot(vertex_normal, v3 - v2) < 0);
+      empty := true;
+      j := 0;
+      while ((j < nvert) && empty) (
+        if (
+          // The vertex is not one of the vertices of the triangle ...
+          (j != mod(i-1, nvert)) &&
+          (j != i) &&
+          (j != mod(i+1, nvert)) &&
+          // ... but is contained inside it,
+          // so the triangle cannot be an ear.
+          (
+            let
+            triangle = [v1, v2, v3];
+            in
+            point_in_polygon([triangle], 0, count(triangle), polygon_axis(triangle), vertices[j])
+          )
+        ) (
+          empty := false;
+        );
+        j := j + 1;
+      );
+      ear_found := convex && empty;
+      if (!ear_found) (
+        i := i + 1;
+        v1 := v2;
+        v2 := v3;
+        v3 := vertices[mod(i+1, nvert)];
+      );
+    );
+    in
+    [
+      [v1, v2, v3],
+      // Recurse after removing the vertex forming the tip of the ear
+      ... triangulate_polygon(delete(vertices, i)),
+    ]
+  ) else (
+    [vertices]
+  );
+
+stl (s :: is_polyhedron) =
+  let
+  polygons = [for (f in s.faces) [for (i in f) s.vertices[i]]];
+  triangles = [for (f in polygons) (... triangulate_polygon(f))];
+  in
+  // https://en.wikipedia.org/wiki/STL_(file_format)#ASCII_STL
+  strcat [
+    "solid polyhedron", nl,
+    ... [for (f in triangles) strcat [
+      "facet normal 0 0 0", nl,
+      "  outer loop", nl,
+      ... [for (v in f) strcat [
+        "    vertex ",
+        v[X], " ",
+        v[Y], " ",
+        v[Z], nl,
+      ]],
+      "  endloop", nl,
+      "endfacet", nl,
+    ]],
+    "endsolid polyhedron",
+  ];
+
+dual (s :: is_polyhedron) =
+  // TODO
+  {};
+
+rectify (s :: is_polyhedron) =
+  // TODO
+  {};
+
+stellate (height :: is_num) (s :: is_polyhedron) =
+  // TODO
+  {};
+
+cube =
+  polyhedron {
+    vertices: [
+      // https://en.wikipedia.org/wiki/Cube#Cartesian_coordinates
+      [ 1,  1,  1],
+      [ 1,  1, -1],
+      [ 1, -1,  1],
+      [ 1, -1, -1],
+      [-1,  1,  1],
+      [-1,  1, -1],
+      [-1, -1,  1],
+      [-1, -1, -1],
+    ],
+    faces: [
+      // Indices of vertices surrounding each face,
+      // in counterclockwise order when viewed from
+      // outside of the polyhedron
+      [0, 4, 6, 2],
+      [7, 5, 1, 3],
+      [0, 2, 3, 1],
+      [7, 6, 4, 5],
+      [0, 1, 5, 4],
+      [7, 3, 2, 6],
+    ],
+  };
+
+}
