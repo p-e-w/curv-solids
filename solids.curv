@@ -248,6 +248,42 @@ stl (s :: is_polyhedron) =
     "endsolid polyhedron",
   ];
 
+edges (s :: is_polyhedron) =
+  [for (f in s.faces) (
+    for ([i, j] in pairs f) (
+      // Adjacent faces traverse their shared edge in opposite directions,
+      // so this condition is true for exactly one of the faces bordering
+      // an edge. Therefore, the resulting edge list will be duplicate-free.
+      if (i < j) (
+        [s.vertices[i], s.vertices[j]]
+      )
+    )
+  )];
+
+wireframe (thickness :: is_num) (s :: is_polyhedron) =
+  let
+  es = edges s;
+  in
+  make_shape {
+    dist (x,y,z,t) =
+      do
+      var distance := 0;
+      var min_distance := inf;
+      for (i in 0 ..< count es) (
+        distance := distance_point_line_segment([es[i,0], es[i,1]], [x,y,z]);
+        if (distance < min_distance) (
+          min_distance := distance;
+        );
+      );
+      in
+      min_distance - thickness;
+    bbox = [
+      (min(s.vertices)) - thickness,
+      (max(s.vertices)) + thickness,
+    ];
+    is_3d = true;
+  };
+
 dual (s :: is_polyhedron) =
   // TODO
   {};
