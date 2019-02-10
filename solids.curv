@@ -46,10 +46,9 @@ point_in_polygon (polygons, index, length, axis, point) =
   // (https://wrf.ecse.rpi.edu/Research/Short_Notes/pnpoly.html).
   // See also https://en.wikipedia.org/wiki/Point_in_polygon.
   var nvert := length;
-  var i := 0;
   var j := nvert - 1;
   var c := false;
-  while (i < nvert) (
+  for (i in 0 ..< nvert) (
     if (
       (bit(polygons[index,i,B] > point[B]) != bit(polygons[index,j,B] > point[B])) &&
       (point[A] < (polygons[index,j,A] - polygons[index,i,A]) * (point[B] - polygons[index,i,B]) /
@@ -58,7 +57,6 @@ point_in_polygon (polygons, index, length, axis, point) =
       c := !c;
     );
     j := i;
-    i := i + 1;
   );
   in
   c;
@@ -99,13 +97,11 @@ distance_point_polygon (polygons, index, length, normal, axis, point) =
     do
     var distance := 0;
     var min_distance := inf;
-    var i := 0;
-    while (i < length) (
+    for (i in 0 ..< length) (
       distance := distance_point_line_segment([polygons[index,i], polygons[index, mod(i+1, length)]], point);
       if (distance < min_distance) (
         min_distance := distance;
       );
-      i := i + 1;
     );
     in
     min_distance
@@ -124,13 +120,11 @@ distance_point_polyhedron (polygons, lengths, normals, axes, point) =
   do
   var distance := 0;
   var min_distance := inf;
-  var i := 0;
-  while (i < count polygons) (
+  for (i in 0 ..< count polygons) (
     distance := distance_point_polygon(polygons, i, lengths[i], normals[i], axes[i], point);
     if (abs(distance) < abs(min_distance)) (
       min_distance := distance;
     );
-    i := i + 1;
   );
   in
   min_distance;
@@ -140,7 +134,7 @@ polyhedron {vertices :: is_list, faces :: is_list} =
   lengths = [for (f in faces) count(f)];
   max_length = max lengths;
   polygons = [for (f in faces)
-    [for (i in 0..<max_length) (
+    [for (i in 0 ..< max_length) (
       if (i < count(f)) (
         vertices[f[i]]
       ) else (
